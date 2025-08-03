@@ -12,6 +12,8 @@ import Cart from '../models/cart.js';
 import { checkVoucherIsValid, rollbackVoucher } from './voucherChecking.service.js';
 import User from '../models/user.js';
 
+
+
 // @GET:  Get all orders
 export const getAllOrders = async (req, res, next) => {
     const page = req.query.page ? +req.query.page : 1;
@@ -88,32 +90,29 @@ export const createOrder = async (req, res, next) => {
     const userId = req.userId;
     const voucherCode = req.body.voucherCode;
     let totalPrice = req.body.totalPrice;
-    let shippingFee = 0;
-    let isVoucherForNewUser = false;
-    let discountType = 'fixed';
-    if (req.body.shippingFee) {
-        shippingFee = req.body.shippingFee;
-    }
-    const totalPriceNoShip = req.body.totalPrice - shippingFee;
+    let shippingFee = req.body.shippingFee || 0;
     let voucherName = '';
     let voucherDiscount = 0;
+    let discountType = 'fixed';
+    const totalPriceNoShip = req.body.totalPrice - shippingFee;
+
     const currentUser = await User.findById(userId);
     if (!currentUser) {
         throw new NotFoundError(`Không tìm thấy người dùng với id: ${userId}`);
     }
 
-    // Check voucher
+    // ✅ Kiểm tra và áp dụng mã giảm giá nếu có
     if (voucherCode) {
         const data = await checkVoucherIsValid(voucherCode, userId, totalPriceNoShip, shippingFee);
-        console.log(data);
         voucherName = data.voucherName;
         voucherDiscount = data.voucherDiscount;
         totalPrice = data.totalPrice;
         discountType = data.discountType;
     }
+
     const order = new Order({
         ...req.body,
-        userId: req.userId,
+        userId,
         voucherName,
         voucherDiscount,
         shippingFee,
@@ -122,11 +121,18 @@ export const createOrder = async (req, res, next) => {
         discountType,
     });
 
-    // Pause for 3 seconds
-    await new Promise((resolve) => setTimeout(resolve, 2000));
     const session = req.session;
-    //   Update stock
-    await inventoryService.updateStockOnCreateOrder(req.body.items, session);
+    
+    // 🧮 Trừ kho – kiểm tra tồn kho và thông báo nếu thiếu
+    try {
+        await inventoryService.updateStockOnCreateOrder(req.body.items, session);
+    } catch (error) {
+        // Nếu lỗi do thiếu hàng, trả thông báo chi tiết
+        if (error.message.includes('hết hàng')) {
+            throw new BadRequestError(`Không đủ số lượng: ${error.message}`);
+        }
+        throw error;
+    }
 
     const newOrder = await order.save({ session });
 
@@ -160,13 +166,17 @@ export const createOrder = async (req, res, next) => {
         type: 'UpdateStatusOrder',
     });
 
+    // 🧹 Xóa sản phẩm khỏi giỏ hàng
     await Promise.all(
         req.body.items.map(async (product) => {
             await Cart.findOneAndUpdate(
                 { userId: req.userId },
                 {
                     $pull: {
-                        items: { product: product.productId, variant: product.variantId },
+                        items: {
+                            product: product.productId,
+                            variant: product.variantId,
+                        },
                     },
                 },
                 { new: true },
@@ -176,7 +186,7 @@ export const createOrder = async (req, res, next) => {
 
     return res.status(StatusCodes.OK).json(
         customResponse({
-            data: order,
+            data: newOrder,
             success: true,
             status: StatusCodes.OK,
             message: ReasonPhrases.OK,

@@ -4,32 +4,39 @@ import Product from '../models/product.js';
 const updateStock = async (dataItems, decreaseStock, session = null) => {
     return Promise.all(
         dataItems.map(async (item) => {
-            const productTarget = session
+            const product = session
                 ? await Product.findOne({ _id: item.productId }).session(session)
                 : await Product.findOne({ _id: item.productId });
 
-            if (!productTarget) {
-                throw new NotFoundError('Product not found');
+            if (!product) {
+                throw new NotFoundError(`Sản phẩm không tồn tại (ID: ${item.productId})`);
             }
 
-            productTarget.variants = productTarget.variants.map((variant) => {
-                if (variant._id.toString() === item.variantId.toString()) {
-                    if (decreaseStock) {
-                        const newStock = variant.stock - item.quantity;
-                        if (newStock < 0) {
-                            throw new BadRequestError('Sản phẩm đã hết hàng!');
-                        }
-                        variant.stock = newStock;
-                    } else {
-                        variant.stock += item.quantity;
-                    }
-                }
-                return variant;
-            });
+            const variantIndex = product.variants.findIndex(v => v._id.toString() === item.variantId.toString());
 
-            productTarget.sold += decreaseStock ? item.quantity : -item.quantity;
-            return productTarget.save();
-        }),
+            if (variantIndex === -1) {
+                throw new NotFoundError(`Biến thể không tồn tại trong sản phẩm ${product.name}`);
+            }
+
+            const variant = product.variants[variantIndex];
+
+            if (decreaseStock) {
+                const newStock = variant.stock - item.quantity;
+                if (newStock < 0) {
+                    throw new BadRequestError(`Sản phẩm "${product.name}" đã hết hàng. Hiện chỉ còn: ${variant.stock}`);
+                }
+                variant.stock = newStock;
+            } else {
+                variant.stock += item.quantity;
+            }
+
+            product.variants[variantIndex] = variant;
+
+            // Cập nhật số lượng bán
+            product.sold += decreaseStock ? item.quantity : -item.quantity;
+
+            return product.save({ session });
+        })
     );
 };
 
@@ -37,6 +44,6 @@ export const updateStockOnCreateOrder = async (dataItems, session) => {
     return updateStock(dataItems, true, session);
 };
 
-export const updateStockOnCancelOrder = async (dataItems) => {
-    return updateStock(dataItems, false);
+export const updateStockOnCancelOrder = async (dataItems, session = null) => {
+    return updateStock(dataItems, false, session);
 };
