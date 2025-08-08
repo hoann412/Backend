@@ -66,7 +66,10 @@ class APIQuery {
             } else {
                 const search = this.queryString.search.toLowerCase();
                 this.query = this.query.find({
-                    name: { $regex: search, $options: 'i' },
+                  $or: [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+    ]
                 });
             }
         }
